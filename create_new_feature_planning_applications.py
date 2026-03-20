@@ -40,7 +40,7 @@ REPLICA_NAME = feature_config.get("FEATURE_SETTINGS", "replica_name")
 
 SUBTYPES = feature_config.getboolean("FEATURE_SETTINGS", "subtypes")
 SUBTYPE_FIELD = feature_config.get("FEATURE_SETTINGS", "subtype_field", fallback="")
-SUBTYPE_DOMAINS = eval(feature_config.get("FEATURE_SETTINGS", "subtype_domains"))  # if needed
+SUBTYPE_DOMAINS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "subtype_domains"))  # if needed
 
 TOPOLOGY_DATASET = feature_config.getboolean("FEATURE_SETTINGS", "topology_dataset")
 
@@ -56,8 +56,6 @@ for domain, field_type in NEW_DOMAIN_TYPES.items():
 
 PROD_SDE = config.get("SERVER", "prod_rw")
 
-if "GIS" in os.environ.get("COMPUTERNAME").upper():
-    PROD_SDE = config.get("SERVER", "prod_rw")
 
 SPATIAL_REFERENCE = os.path.join(PROD_SDE, "SDEADM.LND_hrm_parcel_parks", "SDEADM.LND_hrm_park")
 
@@ -98,7 +96,7 @@ if __name__ == "__main__":
                 feature_name = fields_report.feature_class_name  # Should be all lower case except for the prefix
                 feature_shape = fields_report.feature_shape
 
-                UNIQUE_ID_FIELDS = eval(feature_config.get("UNIQUE_ID_FIELDS", feature_name, fallback='[]'))
+                UNIQUE_ID_FIELDS = ast.literal_eval(feature_config.get("UNIQUE_ID_FIELDS", feature_name, fallback='[]'))
 
                 if feature_shape.upper() == "LINE":
                     feature_shape = "Polyline"
@@ -138,6 +136,22 @@ if __name__ == "__main__":
                     print(f"\nNew domains to create: {', '.join(new_domains)}")
                     # These should all be found in fields_report.field_details
 
+                    def sort_key_description(row):
+                        val = row.Description
+
+                        # Put None at the end
+                        if val is None:
+                            return 2, ""
+
+                        # Try numeric first
+                        try:
+                            return 0, int(val)  # numeric bucket, sorted numerically
+
+                        except (TypeError, ValueError):
+                            return 1, str(val)  # non numeric, sorted alphabetically
+
+                    subtype_domain_names = {d["domain"] for d in SUBTYPE_DOMAINS["domains"]} if SUBTYPE_DOMAINS else set()
+
                     for domain in new_domains:
 
                         try:
@@ -147,10 +161,9 @@ if __name__ == "__main__":
                                 field_type = NEW_DOMAIN_TYPES.get(domain)
 
                             # Check if domain is a subtype domain
-                            if SUBTYPE_DOMAINS:
-                                if domain in [d["domain"] for d in SUBTYPE_DOMAINS["domains"]]:
-                                    field_type = "LONG"
-                                    print("\t*Subtype Domain Found!")
+                            if domain in subtype_domain_names:
+                                field_type = "LONG"
+                                print("\t*Subtype Domain Found!")
 
                             print(f"\n\tCreating domain '{domain}'...")
                             arcpy.CreateDomain_management(
@@ -170,25 +183,7 @@ if __name__ == "__main__":
 
                         domain_df = domain_dataframes.get(domain)
 
-
-                        def sort_key(row):
-                            val = row.Description
-
-                            # Put None at the end
-                            if val is None:
-                                return 2, ""
-
-                            # Try numeric first
-                            try:
-                                return 0, int(val)  # numeric bucket, sorted numerically
-
-                            except (TypeError, ValueError):
-                                return 1, str(val)  # non numeric, sorted alphabetically
-
-
-                        if SUBTYPE_DOMAINS:
-                            if domain in [d["domain"] for d in SUBTYPE_DOMAINS["domains"]]:
-                                sort_key = lambda x: x.Code
+                        sort_key = (lambda x: x.Code) if domain in subtype_domain_names else sort_key_description
 
                         # TypeError: '<' not supported between instances of 'str' and 'int' (LND_fac_snow_group_type)
                         for row in sorted([x for x in domain_df.itertuples()], key=sort_key):
@@ -228,7 +223,6 @@ if __name__ == "__main__":
                         if field_name not in SDSF_IGNORE_FIELDS:
                             alias = row["Alias"]
                             field_type = row["Field Type"]
-                            field_len = field_length
                             nullable = row["Nullable"]
                             default_value = row["Default Value"]
                             domain = row["Domain"] or "#"
@@ -243,7 +237,7 @@ if __name__ == "__main__":
                             new_feature.add_field(
                                 field_name=field_name.upper(),
                                 field_type=field_type,
-                                length=field_len,
+                                length=field_length,
                                 alias=alias,
                                 # nullable=nullable,
                                 domain_name=domain
@@ -301,7 +295,7 @@ if __name__ == "__main__":
 
                         ro_sdeadm_feature = os.path.join(ro_sdeadm_db, new_feature.feature_name)
 
-                        for ro_feature, ro_db in (ro_sdeadm_feature, ro_sdeadm_db),:
+                        for ro_feature, ro_db in [(ro_sdeadm_feature, ro_sdeadm_db)]:
 
                             # Don't need to add to WEB if feature is a table
                             if feature_shape.upper() == 'ENTERPRISE GEODATABASE TABLE':
@@ -312,7 +306,7 @@ if __name__ == "__main__":
                                 print(f"\tCopying RW feature to {ro_db}...")
 
                                 # Need to use table to table if a table...
-                                if feature_shape.upper() == 'ENTERPRISE GEODATABASE TABLE' or 'NOT APPLICABLE':
+                                if feature_shape.upper() in ('ENTERPRISE GEODATABASE TABLE', 'NOT APPLICABLE'):
                                     feature = arcpy.TableToTable_conversion(
                                         in_rows=new_feature.feature,
                                         out_path=ro_db,
@@ -336,7 +330,7 @@ if __name__ == "__main__":
                             )
 
                         # Un-version RO feature, disable editor tracking, index
-                        for feature in ro_sdeadm_feature,:
+                        for feature in [ro_sdeadm_feature]:
 
                             if arcpy.Exists(
                                     feature):  # ro_webgis_feature may not have ever gotten created if it was a table.
@@ -352,11 +346,6 @@ if __name__ == "__main__":
                                 ro_users = ["PUBLIC", "SDE"]
 
                                 for user in ro_users:
-                                    arcpy.ChangePrivileges_management(
-                                        in_dataset=feature,
-                                        user="PUBLIC",
-                                        View="GRANT"
-                                    )
                                     arcpy.ChangePrivileges_management(
                                         in_dataset=feature,
                                         user=user,
