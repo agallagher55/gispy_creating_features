@@ -25,67 +25,46 @@ MAX_TABLE_NAME_LENGTH = 27
 config = ConfigParser()
 config.read('config.ini')
 
-PROD_SDE = config.get("SERVER", "prod_rw")
-SPATIAL_REFERENCE = os.path.join(PROD_SDE, "SDEADM.LND_hrm_parcel_parks", "SDEADM.LND_hrm_park")
+feature_config = ConfigParser()
+feature_config.optionxform = str  # preserve case
+feature_config.read('feature_config_planning_applications.ini')
 
+SDSF = feature_config.get("SDSF_SETTINGS", "sdsf")
+SDSF_IGNORE_FIELDS = ast.literal_eval(feature_config.get("SDSF_SETTINGS", "SDSF_IGNORE_FIELDS"))
+
+ADD_EDITOR_TRACKING = feature_config.getboolean("FEATURE_SETTINGS", "add_editor_tracking")
+EDIT_PERMISSIONS_USERS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "EDIT_PERMISSIONS_USERS"))
+
+READY_TO_ADD_TO_REPLICA = feature_config.getboolean("FEATURE_SETTINGS", "ready_to_add_to_replica")
+REPLICA_NAME = feature_config.get("FEATURE_SETTINGS", "replica_name")
+
+SUBTYPES = feature_config.getboolean("FEATURE_SETTINGS", "subtypes")
+SUBTYPE_FIELD = feature_config.get("FEATURE_SETTINGS", "subtype_field", fallback="")
+SUBTYPE_DOMAINS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "subtype_domains"))  # if needed
+
+TOPOLOGY_DATASET = feature_config.getboolean("FEATURE_SETTINGS", "topology_dataset")
+
+# TODO: update
+# UNIQUE ID FIELDS
+NEW_DOMAIN_TYPES = dict(feature_config.items("NEW_DOMAIN_TYPES"))
 VALID_FIELD_TYPES = {"TEXT", "SHORT", "LONG", "FLOAT", "DOUBLE", "DATE"}
 
+for domain, field_type in NEW_DOMAIN_TYPES.items():
 
-def sort_key_description(row):
-    val = row.Description
+    if field_type.upper() not in VALID_FIELD_TYPES:
+        raise ValueError(f"Error: Field type '{field_type}' for domain '{domain}' is not standard.")
 
-    # Put None at the end
-    if val is None:
-        return 2, ""
-
-    # Try numeric first
-    try:
-        return 0, int(val)  # numeric bucket, sorted numerically
-
-    except (TypeError, ValueError):
-        return 1, str(val)  # non numeric, sorted alphabetically
+PROD_SDE = config.get("SERVER", "prod_rw")
 
 
-def process_feature_config(feature_config_path: str) -> None:
-    """Run the full feature creation pipeline for a single feature config file.
+SPATIAL_REFERENCE = os.path.join(PROD_SDE, "SDEADM.LND_hrm_parcel_parks", "SDEADM.LND_hrm_park")
 
-    Args:
-        feature_config_path: Path to the feature config .ini file.
-    """
-    print(f"\n{'=' * 60}")
-    print(f"Processing config: {feature_config_path}")
-    print(f"{'=' * 60}")
-
-    feature_config = ConfigParser()
-    feature_config.optionxform = str  # preserve case
-    feature_config.read(feature_config_path)
-
-    # --- SDSF may be a single path or a comma-separated list of paths ---
-    raw_sdsf = feature_config.get("SDSF_SETTINGS", "sdsf")
-    sdsf_files = [p.strip() for p in raw_sdsf.split(",") if p.strip()]
-
-    SDSF_IGNORE_FIELDS = ast.literal_eval(feature_config.get("SDSF_SETTINGS", "SDSF_IGNORE_FIELDS"))
-
-    ADD_EDITOR_TRACKING = feature_config.getboolean("FEATURE_SETTINGS", "add_editor_tracking")
-    EDIT_PERMISSIONS_USERS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "EDIT_PERMISSIONS_USERS"))
-
-    READY_TO_ADD_TO_REPLICA = feature_config.getboolean("FEATURE_SETTINGS", "ready_to_add_to_replica")
-    REPLICA_NAME = feature_config.get("FEATURE_SETTINGS", "replica_name")
-
-    SUBTYPES = feature_config.getboolean("FEATURE_SETTINGS", "subtypes")
-    SUBTYPE_FIELD = feature_config.get("FEATURE_SETTINGS", "subtype_field", fallback="")
-    SUBTYPE_DOMAINS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "subtype_domains"))
-
-    TOPOLOGY_DATASET = feature_config.getboolean("FEATURE_SETTINGS", "topology_dataset")
-
-    NEW_DOMAIN_TYPES = dict(feature_config.items("NEW_DOMAIN_TYPES"))
-
-    for domain, field_type in NEW_DOMAIN_TYPES.items():
-        if field_type.upper() not in VALID_FIELD_TYPES:
-            raise ValueError(f"Error: Field type '{field_type}' for domain '{domain}' is not standard.")
+if __name__ == "__main__":
 
     if ADD_EDITOR_TRACKING:
         SDSF_IGNORE_FIELDS.extend(["ADDBY", "ADDDATE", "MODBY", "MODDATE"])
+
+    CURRENT_DIR = os.getcwd()
 
     for dbs in [
         [
@@ -93,7 +72,7 @@ def process_feature_config(feature_config_path: str) -> None:
         ],
 
         # [
-        #     config.get("SERVER", "qa_rw"),  # qa_ro will get copied to db when processing rw
+        #     config.get("SERVER", "qa_rw"),  # qa_ro, qa_web_ro will get copied to db when processing rw
         # ],
 
         # [
@@ -108,16 +87,16 @@ def process_feature_config(feature_config_path: str) -> None:
             # Determine the type and read-write status of a database. Ex) SDE + RW, SDE + RO, GDB, etc.
             db_type, db_rights = connections.connection_type(db)
 
-            for xl_file_num, xl_file in enumerate(sdsf_files, start=1):
-                print(f"\n{xl_file_num}/{len(sdsf_files)}) Creating feature from {xl_file}...")
+            for xl_file in [
+                SDSF,
+            ]:
+                print(f"\nCreating feature from {xl_file}...")
                 fields_report = FieldsReport(xl_file)
 
                 feature_name = fields_report.feature_class_name  # Should be all lower case except for the prefix
                 feature_shape = fields_report.feature_shape
 
-                UNIQUE_ID_FIELDS = ast.literal_eval(
-                    feature_config.get("UNIQUE_ID_FIELDS", feature_name, fallback='[]')
-                )
+                UNIQUE_ID_FIELDS = ast.literal_eval(feature_config.get("UNIQUE_ID_FIELDS", feature_name, fallback='[]'))
 
                 if feature_shape.upper() == "LINE":
                     feature_shape = "Polyline"
@@ -127,10 +106,21 @@ def process_feature_config(feature_config_path: str) -> None:
                 domains_report = DomainsReport(xl_file)
 
                 domain_names, domain_dataframes = domains_report.domain_info()
+                # domain_names = list(domain_data.keys())
+
+                # if SUBTYPES:
+                #     subtype_info = fields_report.subtype_info()
+                #     subtype_field = subtype_info.get("subtype_field")
+                #     subtype_field = \
+                #         [value.get("subtype_field") for key, value in domain_data.items() if
+                #          value.get("subtype_field")][0]
+                #     subtype_domains_field = subtype_info.get("subtype_domains_field")
+                #     subtype_data = {key: value for key, value in domain_data.items() if
+                #                     domain_data[key].get("subtype_code")}
 
                 if db_type == "GDB":
 
-                    # Transfer existing domains to local gdb and find new domains not in SDE
+                    # Transfer existing domains to local dgb and find new domains not in SDE
                     new_domains = transfer_domains(
                         domains=domain_names,
                         output_workspace=db,
@@ -144,10 +134,23 @@ def process_feature_config(feature_config_path: str) -> None:
                 # Create any new domains
                 if new_domains:
                     print(f"\nNew domains to create: {', '.join(new_domains)}")
+                    # These should all be found in fields_report.field_details
 
-                    subtype_domain_names = (
-                        {d["domain"] for d in SUBTYPE_DOMAINS["domains"]} if SUBTYPE_DOMAINS else set()
-                    )
+                    def sort_key_description(row):
+                        val = row.Description
+
+                        # Put None at the end
+                        if val is None:
+                            return 2, ""
+
+                        # Try numeric first
+                        try:
+                            return 0, int(val)  # numeric bucket, sorted numerically
+
+                        except (TypeError, ValueError):
+                            return 1, str(val)  # non numeric, sorted alphabetically
+
+                    subtype_domain_names = {d["domain"] for d in SUBTYPE_DOMAINS["domains"]} if SUBTYPE_DOMAINS else set()
 
                     for domain in new_domains:
 
@@ -182,7 +185,7 @@ def process_feature_config(feature_config_path: str) -> None:
 
                         sort_key = (lambda x: x.Code) if domain in subtype_domain_names else sort_key_description
 
-                        # TypeError: '<' not supported between instances of 'str' and 'int'
+                        # TypeError: '<' not supported between instances of 'str' and 'int' (LND_fac_snow_group_type)
                         for row in sorted([x for x in domain_df.itertuples()], key=sort_key):
                             code = row.Code
                             desc = row.Description
@@ -209,10 +212,12 @@ def process_feature_config(feature_config_path: str) -> None:
                     )
 
                     print("\nAdding Fields...")
+                    feature_fields = field_data["Field Name"].values
 
                     for row_num, row in field_data.iterrows():
 
                         field_name = row["Field Name"].upper().strip()
+                        # field_length = row["Field Length (# of characters)"]
                         field_length = row["Field Length"]
 
                         if field_name not in SDSF_IGNORE_FIELDS:
@@ -285,8 +290,9 @@ def process_feature_config(feature_config_path: str) -> None:
                         # Register as Versioned
                         new_feature.register_as_versioned()  # needs to be versioned to add to replica
 
-                        # COPY FEATURE TO RO
+                        # COPY FEATURE TO RO, WEBGIS
                         ro_sdeadm_db = db.replace("RW", "RO")
+
                         ro_sdeadm_feature = os.path.join(ro_sdeadm_db, new_feature.feature_name)
 
                         for ro_feature, ro_db in [(ro_sdeadm_feature, ro_sdeadm_db)]:
@@ -299,6 +305,7 @@ def process_feature_config(feature_config_path: str) -> None:
                             if not arcpy.Exists(ro_feature):
                                 print(f"\tCopying RW feature to {ro_db}...")
 
+                                # Need to use table to table if a table...
                                 if feature_shape.upper() in ('ENTERPRISE GEODATABASE TABLE', 'NOT APPLICABLE'):
                                     feature = arcpy.TableToTable_conversion(
                                         in_rows=new_feature.feature,
@@ -325,7 +332,8 @@ def process_feature_config(feature_config_path: str) -> None:
                         # Un-version RO feature, disable editor tracking, index
                         for feature in [ro_sdeadm_feature]:
 
-                            if arcpy.Exists(feature):
+                            if arcpy.Exists(
+                                    feature):  # ro_webgis_feature may not have ever gotten created if it was a table.
 
                                 print(f"\tRegistering as UN-versioned for '{feature}'...")
                                 arcpy.UnregisterAsVersioned_management(in_dataset=feature)
@@ -404,15 +412,3 @@ def process_feature_config(feature_config_path: str) -> None:
     # Features in RO, WEB_RO
 
     # Add to CMDB
-
-
-if __name__ == "__main__":
-
-    feature_config_files = [
-        "feature_config_planning_applications.ini",
-        # "feature_config_another_feature.ini",
-    ]
-
-    for i, cfg_path in enumerate(feature_config_files, start=1):
-        print(f"\nConfig {i}/{len(feature_config_files)}: {cfg_path}")
-        process_feature_config(cfg_path)
