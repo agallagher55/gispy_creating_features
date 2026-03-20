@@ -1,0 +1,5 @@
+As discussed in the GIS Design Authority, we require two new feature classes to be created for the March 25 open data release.  Somya is working on creating the ETL process and tables in the data warehouse. We would like the PID(s) to be uses as the means of represent the spatial outline of parcel(s) for the subdivision and planning application.
+There are some records that do not have PIDs, it is still undecided if we need to create another dataset for open data for these records from the data warehouse table
+
+Location of forms: R:\ICT\ICT GIS\GIS Design Authority\Change Requests\PPLC Subdivision Applications\Create new feature class LND_PPLC_ subdivision_applications.xlsx
+R:\ICT\ICT GIS\GIS Design Authority\Change Requests\PPLC Planning Applications\Create new feature class LND_PPLC_ planning_applications.xlsx
