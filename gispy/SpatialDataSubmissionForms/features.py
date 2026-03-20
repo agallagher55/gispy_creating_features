@@ -284,6 +284,17 @@ class Feature:
             print(f"Did not find {field} in {self.feature_name}")
 
     @arcpy_messages
+    def enable_archiving(self):
+        print(f"\nEnabling archiving on '{self.feature}'...")
+
+        if self.desc.isArchived:
+            print(f"\t'{self.feature}' already has archiving enabled.")
+            return
+
+        arcpy.EnableArchiving_management(self.feature)
+        print("\tArchiving enabled.")
+
+    @arcpy_messages
     def assign_domain(self, field_name, domain_name, subtypes="#"):
         print(f"\nAssigning domain '{domain_name}' to field '{field_name}'...")
 

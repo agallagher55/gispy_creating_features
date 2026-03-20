@@ -33,6 +33,7 @@ SDSF = feature_config.get("SDSF_SETTINGS", "sdsf")
 SDSF_IGNORE_FIELDS = ast.literal_eval(feature_config.get("SDSF_SETTINGS", "SDSF_IGNORE_FIELDS"))
 
 ADD_EDITOR_TRACKING = feature_config.getboolean("FEATURE_SETTINGS", "add_editor_tracking")
+ENABLE_ARCHIVING = feature_config.getboolean("FEATURE_SETTINGS", "enable_archiving")
 EDIT_PERMISSIONS_USERS = ast.literal_eval(feature_config.get("FEATURE_SETTINGS", "EDIT_PERMISSIONS_USERS"))
 
 READY_TO_ADD_TO_REPLICA = feature_config.getboolean("FEATURE_SETTINGS", "ready_to_add_to_replica")
@@ -289,6 +290,9 @@ if __name__ == "__main__":
 
                         # Register as Versioned
                         new_feature.register_as_versioned()  # needs to be versioned to add to replica
+
+                        if ENABLE_ARCHIVING:
+                            new_feature.enable_archiving()
 
                         # COPY FEATURE TO RO, WEBGIS
                         ro_sdeadm_db = db.replace("RW", "RO")
