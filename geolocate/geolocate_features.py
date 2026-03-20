@@ -123,7 +123,7 @@ def get_parcel_geometry(parcel_fc, pid):
     return None
 
 
-def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc):
+def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc, pid_field, spatial_reference, exports_dir):
     """
     Generate point features from PID-based parcel centroids.
     Adapted from Posse_Permits/Scripts/Posse_Permits_Processing.py
@@ -132,6 +132,9 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     :param scratch_workspace: Path to scratch file geodatabase
     :param target_feature: Path to the target SDE feature (used as schema template)
     :param parcel_fc: Path to LND_parcel_polygon feature class
+    :param pid_field: Name of the PID field in the data
+    :param spatial_reference: ArcPy SpatialReference object for output features
+    :param exports_dir: Path to directory for CSV exports
     :return: (located_feature_path, unlocated_df) - located point feature class and DataFrame of unlocated records
     """
 
@@ -141,8 +144,8 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     logger.info(f"Generating PID points for '{feature_name}' ({len(records_df)} records)...")
 
     # Export DataFrame to CSV for arcpy compatibility
-    os.makedirs(EXPORTS_DIR, exist_ok=True)
-    export_csv = os.path.join(EXPORTS_DIR, f"{feature_name}_pid_records.csv")
+    os.makedirs(exports_dir, exist_ok=True)
+    export_csv = os.path.join(exports_dir, f"{feature_name}_pid_records.csv")
     records_df.to_csv(export_csv, index=False)
 
     # Create point feature class in scratch workspace using target feature as template
@@ -151,7 +154,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
         out_name=temp_feature_name,
         geometry_type="POINT",
         template=target_feature,
-        spatial_reference=SPATIAL_REFERENCE,
+        spatial_reference=spatial_reference,
     )[0]
 
     # Append CSV records into the temp feature
@@ -163,7 +166,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     logger.info(f"\tAppended {arcpy.GetCount_management(temp_feature)[0]} records to temp feature")
 
     # Build centroid lookup: {pid: (x, y)}
-    pids = records_df[PID_FIELD].unique().tolist()
+    pids = records_df[pid_field].unique().tolist()
     logger.info(f"\tLooking up centroids for {len(pids)} unique PIDs...")
 
     centroids = {}
@@ -177,7 +180,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     # Update feature geometry with centroid coordinates
     unfound_pids = []
 
-    with arcpy.da.UpdateCursor(temp_feature, [PID_FIELD, "SHAPE@XY"]) as cursor:
+    with arcpy.da.UpdateCursor(temp_feature, [pid_field, "SHAPE@XY"]) as cursor:
         for row in cursor:
             row_pid = row[0]
             centroid = centroids.get(row_pid)
@@ -195,7 +198,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     logger.info(f"\tUnlocated PIDs (not found in parcel layer): {len(unfound_pids)}")
 
     # Build DataFrame of unlocated records
-    unlocated_df = records_df[records_df[PID_FIELD].isin(unfound_pids)]
+    unlocated_df = records_df[records_df[pid_field].isin(unfound_pids)]
 
     return temp_feature, unlocated_df
 
@@ -286,17 +289,22 @@ def generate_report(no_pid_df, unlocated_df, report_path):
     logger.info(f"\tReport saved to {report_path}")
 
 
-def main(scratch_workspace, output_rw_sde, truncate_and_load=True):
+def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, spatial_reference, exports_dir, truncate_and_load=True):
     """
     Main processing function. Loops over configured DW source tables,
     geolocates records by PID, and loads into SDE.
 
     :param scratch_workspace: Path to scratch file geodatabase
     :param output_rw_sde: Path to read-write SDE connection
+    :param dw_stg: Path to Data Warehouse staging SDE connection
+    :param dw_source_tables: List of (dw_table_name, target_feature_name) tuples
+    :param pid_field: Name of the PID field in the data
+    :param spatial_reference: ArcPy SpatialReference object for output features
+    :param exports_dir: Path to directory for CSV exports
     :param truncate_and_load: If True, truncate target features before loading
     """
     logger.info(f"OUTPUT WORKSPACE: {output_rw_sde}")
-    logger.info(f"DW STAGING: {DW_STG}")
+    logger.info(f"DW STAGING: {dw_stg}")
 
     all_no_pid = []
     all_unlocated = []
@@ -304,11 +312,11 @@ def main(scratch_workspace, output_rw_sde, truncate_and_load=True):
 
     parcel_fc = os.path.join(output_rw_sde, "SDEADM.LND_parcels", "SDEADM.LND_parcel_polygon")
 
-    total_tables = len(DW_SOURCE_TABLES)
+    total_tables = len(dw_source_tables)
 
-    for table_count, table_info in enumerate(DW_SOURCE_TABLES, start=1):
+    for table_count, table_info in enumerate(dw_source_tables, start=1):
         dw_table_name, target_feature_name = table_info
-        dw_table_path = os.path.join(DW_STG, dw_table_name)
+        dw_table_path = os.path.join(dw_stg, dw_table_name)
         target_sde_feature = os.path.join(output_rw_sde, target_feature_name)
 
         feature_label = target_feature_name.replace("SDEADM.", "")
@@ -339,18 +347,18 @@ def main(scratch_workspace, output_rw_sde, truncate_and_load=True):
         df = df[df_fields]
 
         # Clean PID field — zero-pad to 8 characters
-        if PID_FIELD in df.columns:
-            df[PID_FIELD] = df[PID_FIELD].astype(str).replace({"nan": None, "None": None})
+        if pid_field in df.columns:
+            df[pid_field] = df[pid_field].astype(str).replace({"nan": None, "None": None})
 
             # Separate records by PID availability
-            has_pid = df[df[PID_FIELD].notna()].copy()
-            no_pid = df[df[PID_FIELD].isna()].copy()
+            has_pid = df[df[pid_field].notna()].copy()
+            no_pid = df[df[pid_field].isna()].copy()
 
             # Zero-pad PIDs
-            has_pid[PID_FIELD] = has_pid[PID_FIELD].apply(lambda x: x.zfill(8))
+            has_pid[pid_field] = has_pid[pid_field].apply(lambda x: x.zfill(8))
 
         else:
-            logger.error(f"PID field '{PID_FIELD}' not found in DW table columns: {df.columns.tolist()}")
+            logger.error(f"PID field '{pid_field}' not found in DW table columns: {df.columns.tolist()}")
             continue
 
         logger.info(f"Total records: {len(df)}")
@@ -373,6 +381,9 @@ def main(scratch_workspace, output_rw_sde, truncate_and_load=True):
             scratch_workspace=scratch_workspace,
             target_feature=target_sde_feature,
             parcel_fc=parcel_fc,
+            pid_field=pid_field,
+            spatial_reference=spatial_reference,
+            exports_dir=exports_dir,
         )
 
         # Track unlocated records for reporting
@@ -413,6 +424,11 @@ if __name__ == "__main__":
     processed_features, all_no_pid, all_unlocated = main(
         scratch_workspace=scratch_ws,
         output_rw_sde=SDEADM_RW,
+        dw_stg=DW_STG,
+        dw_source_tables=DW_SOURCE_TABLES,
+        pid_field=PID_FIELD,
+        spatial_reference=SPATIAL_REFERENCE,
+        exports_dir=EXPORTS_DIR,
         truncate_and_load=TRUNCATE_AND_LOAD,
     )
 
