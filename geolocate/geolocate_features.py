@@ -20,8 +20,8 @@ import pandas as pd
 
 from configparser import ConfigParser
 
-from gispy.utils import create_fgdb, setupLog
-from gispy.connections import connection_type
+from ..gispy.utils import create_fgdb, setupLog
+from ..gispy.connections import connection_type
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -39,14 +39,14 @@ config.read("config.ini")
 
 feature_config = ConfigParser()
 feature_config.optionxform = str  # preserve case
-feature_config.read("feature_config_planning_applications.ini")
+feature_config.read("geolocate.ini")
 
 # SDE connections
 SDEADM_RW = config.get("SERVER", "dev_rw")
 SDEADM_RO = config.get("SERVER", "dev_ro")
 
 # Data Warehouse staging connection
-DW_STG = r"E:\HRM\Scripts\SDE\STG_DW_ArcgisServer_PROD.sde"
+DW_STG = r"E:\HRM\Scripts\SDE\STG_DW_ArcgisServer.sde"
 
 # Geolocate settings from feature config
 DW_SOURCE_TABLES = ast.literal_eval(feature_config.get("GEOLOCATE", "dw_source_tables"))
