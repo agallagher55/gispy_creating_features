@@ -3,3 +3,7 @@ There are some records that do not have PIDs, it is still undecided if we need t
 
 Location of forms: R:\ICT\ICT GIS\GIS Design Authority\Change Requests\PPLC Subdivision Applications\Create new feature class LND_PPLC_ subdivision_applications.xlsx
 R:\ICT\ICT GIS\GIS Design Authority\Change Requests\PPLC Planning Applications\Create new feature class LND_PPLC_ planning_applications.xlsx
+
+
+STG_01.OPENDATA_SOURCE_PPLC_PLANNING_APPLICATIONS
+STG_01.OPENDATA_SOURCE_PPLC_SUBDIVISION_APPLICATIONS
