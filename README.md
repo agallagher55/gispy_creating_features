@@ -93,7 +93,7 @@ unique_id_fields = [{}]
 Run the main script to create a new feature class based on your configured SDSF:
 
 ```bash
-python create_new_feature_planning_applications.py
+python create_feature_planning_applications.py
 ```
 
 The script will:
@@ -139,12 +139,15 @@ The script will:
 ## Project Structure
 
 ```
-gispy_creating_features/
-├── create_new_feature_planning_applications.py  # Feature class creation entry point
+pplc_applications/
+├── create_feature_planning_applications.py      # Feature class creation entry point
 ├── geolocate_features.py                        # Geolocate features from DW staging
 ├── config.ini                                    # Server SDE and DW connection paths
 ├── feature_config_planning_applications.ini      # Feature-specific job settings
 ├── geolocate.ini                                 # Geolocate job settings
+│
+├── Posse_Permits/                                # Posse permit processing scripts
+│   └── Scripts/                                  # ETL and utility scripts
 │
 └── gispy/                                        # Core library package
     ├── attribute_rules.py                        # Attribute rules and sequences
@@ -155,16 +158,24 @@ gispy_creating_features/
     ├── metadata.py                               # Metadata management
     ├── subtypes.py                               # Subtype configuration
     ├── utils.py                                  # Shared utility functions
+    ├── out_of_sync_ids.py                        # ID sync between RW and RO SDE
+    ├── list_schema_features.py                   # Schema feature listing
+    ├── project.py                                # Project utilities
     │
     ├── SpatialDataSubmissionForms/               # Excel SDSF parsing module
     │   ├── features.py                           # Feature class creation wrapper
     │   ├── reporter.py                           # Excel report parser
     │   ├── main.py                               # Alternate entry point
-    │   └── submission_form.py                    # Submission form models
+    │   ├── submission_form.py                    # Submission form models
+    │   └── settings.py                           # Module settings
     │
-    └── replicas/                                 # Replication management
-        ├── replicas.py                           # Core replica operations
-        └── examples/                             # Usage examples
+    ├── replicas/                                 # Replication management
+    │   ├── replicas.py                           # Core replica operations
+    │   ├── replicas_qa.py                        # QA/testing replica operations
+    │   └── examples/                             # Usage examples
+    │
+    └── attrubute_rules/                          # Attribute rules reporting (note: intentional typo)
+        └── reporting.py
 ```
 
 ## Notes

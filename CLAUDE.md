@@ -11,12 +11,15 @@ The codebase depends on **ArcPy** (Esri's Python library), which requires a lice
 ## Repository Layout
 
 ```
-gispy_creating_features/
-├── create_new_feature_planning_applications.py  # Primary script — run this
+pplc_applications/
+├── create_feature_planning_applications.py      # Primary script — run this
 ├── geolocate_features.py                        # Geolocate features from DW staging
 ├── config.ini                                    # SDE and DW connection file paths
 ├── geolocate.ini                                 # Per-run geolocate settings
 ├── feature_config_planning_applications.ini      # Per-job feature settings
+│
+├── Posse_Permits/                                # Posse permit processing scripts
+│   └── Scripts/                                  # ETL and utility scripts
 │
 └── gispy/                                        # Core importable package
     ├── attribute_rules.py     # add_sequence_rule() — creates auto-increment rules
@@ -40,6 +43,7 @@ gispy_creating_features/
     │
     ├── replicas/
     │   ├── replicas.py        # Replica, sync_replicas(), add_to_replica()
+    │   ├── replicas_qa.py     # QA/testing replica operations
     │   └── examples/          # Standalone usage examples (not imported)
     │
     └── attrubute_rules/       # Note: intentional typo in folder name
@@ -50,7 +54,7 @@ gispy_creating_features/
 
 ### Feature Creation Pipeline
 
-The main script (`create_new_feature_planning_applications.py`) drives this sequence:
+The main script (`create_feature_planning_applications.py`) drives this sequence:
 
 1. Load `config.ini` and `feature_config_planning_applications.ini`
 2. Parse Excel SDSF → extract feature name, geometry type, fields, domains
@@ -131,7 +135,7 @@ There are currently no automated tests. When adding functionality:
 
 1. Fill out the Excel SDSF with field definitions, geometry type, and domains.
 2. Update `feature_config_planning_applications.ini` with the SDSF path and feature settings.
-3. Run `python create_new_feature_planning_applications.py`.
+3. Run `python create_feature_planning_applications.py`.
 
 ### Add a new domain
 
