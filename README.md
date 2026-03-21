@@ -44,7 +44,8 @@ GISpy automates the workflow of creating new feature classes and tables in enter
 
 ### `config.ini`
 
-Edit the `[SERVER]` section to point to your SDE connection files:
+Edit the `[SERVER]` section to point to your SDE connection files and
+`[HRM_DW]` to point to the Data Warehouse staging connection:
 
 ```ini
 [SERVER]
@@ -54,6 +55,9 @@ qa_rw   = E:\path\to\qa_RW_sdeadm.sde
 qa_ro   = E:\path\to\qa_RO_sdeadm.sde
 prod_rw = E:\path\to\prod_RW_sdeadm.sde
 prod_ro = E:\path\to\prod_RO_sdeadm.sde
+
+[HRM_DW]
+connFileDev = E:\path\to\dw_staging_dev.sde
 ```
 
 ### `feature_config_planning_applications.ini`
@@ -84,6 +88,8 @@ unique_id_fields = [{}]
 
 ## Usage
 
+### Create a new feature class
+
 Run the main script to create a new feature class based on your configured SDSF:
 
 ```bash
@@ -101,13 +107,44 @@ The script will:
 8. Create indexes on ID fields
 9. Apply attribute rules for auto-incrementing IDs
 
+### Geolocate planning application features
+
+Run the geolocate script to populate existing SDE feature classes from Data
+Warehouse staging tables, locating each record at its parcel centroid:
+
+```bash
+python geolocate_features.py
+```
+
+Configure `geolocate.ini` before running:
+
+```ini
+[GEOLOCATE]
+dw_source_tables = [
+    ("DW_STG.PPLC_planning_applications", "SDEADM.LND_PPLC_planning_applications"),
+    ]
+pid_field        = PID
+truncate_and_load = True
+```
+
+The script will:
+1. Read records from Data Warehouse staging tables
+2. Separate records by PID availability
+3. Look up parcel centroids from `LND_parcel_polygon` for each PID
+4. Create point features in a scratch workspace
+5. Load located features into the target SDE feature class (truncate-and-load)
+6. Replicate updated features from RW to RO SDE
+7. Generate an Excel report of records that could not be located
+
 ## Project Structure
 
 ```
 gispy_creating_features/
-├── create_new_feature_planning_applications.py  # Main entry point
-├── config.ini                                    # Server SDE connection paths
+├── create_new_feature_planning_applications.py  # Feature class creation entry point
+├── geolocate_features.py                        # Geolocate features from DW staging
+├── config.ini                                    # Server SDE and DW connection paths
 ├── feature_config_planning_applications.ini      # Feature-specific job settings
+├── geolocate.ini                                 # Geolocate job settings
 │
 └── gispy/                                        # Core library package
     ├── attribute_rules.py                        # Attribute rules and sequences

@@ -13,7 +13,9 @@ The codebase depends on **ArcPy** (Esri's Python library), which requires a lice
 ```
 gispy_creating_features/
 ├── create_new_feature_planning_applications.py  # Primary script — run this
-├── config.ini                                    # SDE connection file paths
+├── geolocate_features.py                        # Geolocate features from DW staging
+├── config.ini                                    # SDE and DW connection file paths
+├── geolocate.ini                                 # Per-run geolocate settings
 ├── feature_config_planning_applications.ini      # Per-job feature settings
 │
 └── gispy/                                        # Core importable package
@@ -61,11 +63,25 @@ The main script (`create_new_feature_planning_applications.py`) drives this sequ
 9. Create indexes on ID fields
 10. Add attribute rules / sequences
 
+### Geolocate Features Pipeline
+
+The geolocate script (`geolocate_features.py`) drives this sequence:
+
+1. Load `config.ini` (SDE + DW connections) and `geolocate.ini`
+2. Read records from Data Warehouse staging tables
+3. Separate records: those with a valid PID vs. those without
+4. Look up parcel centroids from `LND_parcel_polygon` for each unique PID
+5. Create point features in scratch workspace using the target SDE feature as template
+6. Load located features into the target SDE feature class (truncate-and-load)
+7. Replicate updated features from RW to RO SDE
+8. Write an Excel report of unlocated records (no PID or PID not in parcel layer)
+
 ### Configuration Loading
 
-- `config.ini` → SDE connection file paths (server-side: `[SERVER]`, local dev: `[LOCAL]`)
+- `config.ini` → SDE connection file paths (server-side: `[SERVER]`, local dev: `[LOCAL]`) and Data Warehouse staging connection (`[HRM_DW]`)
 - `feature_config_planning_applications.ini` → per-run settings (SDSF path, domains, replicas)
-- Both use Python's `configparser`; values are read with `config.get(section, key)`
+- `geolocate.ini` → geolocate job settings (`dw_source_tables`, `pid_field`, `truncate_and_load`)
+- All use Python's `configparser`; values are read with `config.get(section, key)`
 
 ## Development Guidelines
 
@@ -129,11 +145,18 @@ There are currently no automated tests. When adding functionality:
 2. Set `replica_name` to the target replica name.
 3. Re-run the script (it will skip already-created steps if coded defensively).
 
+### Run the geolocate script
+
+1. Ensure `config.ini` has a valid `[HRM_DW]` connection pointing to the staging database.
+2. Configure `geolocate.ini` with `dw_source_tables` (list of `(dw_table, target_feature)` tuples), `pid_field`, and `truncate_and_load`.
+3. Run `python geolocate_features.py`.
+4. Check the Reports directory for the failure report if any records could not be located.
+
 ## Dependencies
 
 | Library | Source | Purpose |
 |---------|--------|---------|
 | `arcpy` | ArcGIS Pro install | All GIS operations |
-| `pandas` | pip / conda | Excel SDSF parsing |
+| `pandas` | pip / conda | Excel SDSF parsing and reporting |
 | `configparser` | Python stdlib | INI config files |
-| `os`, `sys` | Python stdlib | Path and system utilities |
+| `os`, `ast`, `datetime` | Python stdlib | Path, literal eval, and date utilities |
