@@ -91,6 +91,10 @@ The main script (`create_new_feature_planning_applications.py`) drives this sequ
 
 All core modules import `arcpy`. Any linting or static analysis will flag these as unresolved unless run inside the ArcGIS Pro Python environment. Do not attempt to resolve `arcpy` imports via pip.
 
+### ArcGIS Pro 3.3.5 deployment
+
+### SQL Server Enterprise Geodatabase
+
 ### SDE ID Fields Must Be Nullable
 
 SDE ID fields (e.g., sequence-generated IDs) must be `NULLABLE`. Registry Editor services create features first, then calculate IDs; non-nullable ID fields will cause errors.
