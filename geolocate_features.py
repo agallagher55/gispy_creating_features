@@ -125,6 +125,20 @@ def table_to_dataframe(input_table):
     return df
 
 
+def extract_primary_pid(pid_value):
+    """
+    Extract and zero-pad the first PID from a potentially
+    comma-separated list of PIDs.
+
+    :param pid_value: A single PID string or comma-separated PID list
+    :return: Zero-padded 8-character PID string, or None if empty/null
+    """
+    if not pid_value or pd.isna(pid_value):
+        return None
+    first = str(pid_value).split(",")[0].strip()
+    return first.zfill(8) if first else None
+
+
 def get_parcel_geometry(parcel_fc, pid):
     """
     Get the centroid point of a parcel polygon identified by PID.
@@ -156,7 +170,8 @@ def get_parcel_geometry(parcel_fc, pid):
 
 def generate_pid_points(
     records_df, scratch_workspace, target_feature, parcel_fc,
-    pid_field, sde_pid_field, spatial_reference, exports_dir
+    pid_field, sde_pid_field, spatial_reference, exports_dir,
+    primary_pid_col=None
 ):
 
     """
@@ -168,10 +183,14 @@ def generate_pid_points(
     :param target_feature: Path to the target SDE feature (used as schema
         template)
     :param parcel_fc: Path to LND_parcel_polygon feature class
-    :param pid_field: Name of the PID field in the data
+    :param pid_field: Name of the PID field in the source data
+    :param sde_pid_field: Name of the PID field in the SDE feature class
     :param spatial_reference: ArcPy SpatialReference object for output
         features
     :param exports_dir: Path to directory for CSV exports
+    :param primary_pid_col: Optional column name containing pre-extracted
+        single PIDs for geolocation. Use when pid_field may hold
+        comma-separated multi-value PID strings. Defaults to pid_field.
     :return: (located_feature_path, unlocated_df) - located point feature
         class and DataFrame of unlocated records
     """
@@ -208,8 +227,13 @@ def generate_pid_points(
         " records to temp feature"
     )
 
-    # Build centroid lookup: {pid: (x, y)}
-    pids = records_df[pid_field].unique().tolist()
+    # Determine which column holds the single PID to use for geolocation.
+    # primary_pid_col is pre-extracted when pid_field may hold multi-value
+    # comma-separated strings (e.g. "00130278, 00130286").
+    lookup_col = primary_pid_col if primary_pid_col else pid_field
+
+    # Build centroid lookup: {primary_pid: (x, y)}
+    pids = records_df[lookup_col].dropna().unique().tolist()
     logger.info(f"\tLooking up centroids for {len(pids)} unique PIDs...")
 
     centroids = {}
@@ -220,7 +244,9 @@ def generate_pid_points(
     found_count = sum(1 for v in centroids.values() if v is not None)
     logger.info(f"\tFound parcel geometry for {found_count}/{len(pids)} PIDs")
 
-    # Update feature geometry with centroid coordinates
+    # Update feature geometry with centroid coordinates.
+    # The SDE field (sde_pid_field) may hold a multi-value string, so
+    # extract_primary_pid is applied to get the lookup key.
     unfound_pids = []
 
     with arcpy.da.UpdateCursor(
@@ -229,7 +255,7 @@ def generate_pid_points(
 
         for row in cursor:
 
-            row_pid = row[0]
+            row_pid = extract_primary_pid(row[0])
             centroid = centroids.get(row_pid)
 
             if centroid:
@@ -251,7 +277,7 @@ def generate_pid_points(
     )
 
     # Build DataFrame of unlocated records
-    unlocated_df = records_df[records_df[pid_field].isin(unfound_pids)]
+    unlocated_df = records_df[records_df[lookup_col].isin(unfound_pids)]
 
     return temp_feature, unlocated_df
 
@@ -436,7 +462,11 @@ def main(
         ]
         df = df[df_fields]
 
-        # Clean PID field — zero-pad to 8 characters
+        # Clean PID field and extract primary PIDs for geolocation.
+        # The PIDs field may hold a comma-separated list (e.g.
+        # "00130278, 00130286"); extract_primary_pid takes the first value.
+        # The original multi-value string is preserved in pid_field for
+        # storage in the SDE attribute.
         if pid_field in df.columns:
 
             df[pid_field] = df[pid_field].astype(str).replace(
@@ -447,9 +477,10 @@ def main(
             has_pid = df[df[pid_field].notna()].copy()
             no_pid = df[df[pid_field].isna()].copy()
 
-            # Zero-pad PIDs
-            has_pid[pid_field] = has_pid[pid_field].apply(
-                lambda x: x.zfill(8)
+            # Extract and zero-pad the first PID from each (potentially
+            # multi-value) PIDs string into a dedicated geolocation column.
+            has_pid["_primary_pid"] = has_pid[pid_field].apply(
+                extract_primary_pid
             )
 
         else:
@@ -490,6 +521,7 @@ def main(
             sde_pid_field=DEFAULT_PID_FIELD,
             spatial_reference=spatial_reference,
             exports_dir=exports_dir,
+            primary_pid_col="_primary_pid",
         )
 
         # Track unlocated records for reporting
