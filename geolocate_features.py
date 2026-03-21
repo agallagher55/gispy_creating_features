@@ -49,8 +49,21 @@ DW_STG = config.get("HRM_DW", "connFileDev")
 DW_SOURCE_TABLES = ast.literal_eval(
     feature_config.get("GEOLOCATE", "dw_source_tables")
 )
-PID_FIELD = feature_config.get("GEOLOCATE", "pid_field")
+DEFAULT_PID_FIELD = feature_config.get("GEOLOCATE", "pid_field")
 TRUNCATE_AND_LOAD = feature_config.getboolean("GEOLOCATE", "truncate_and_load")
+
+# Per-table PID field overrides; falls back to DEFAULT_PID_FIELD if not listed
+PID_FIELD_OVERRIDES = (
+    dict(feature_config.items("PID_FIELDS"))
+    if feature_config.has_section("PID_FIELDS")
+    else {}
+)
+
+# Build final per-table PID field map: {dw_table_name: pid_field_name}
+PID_FIELD_MAP = {
+    dw_table: PID_FIELD_OVERRIDES.get(dw_table, DEFAULT_PID_FIELD)
+    for dw_table, _target in DW_SOURCE_TABLES
+}
 
 # Reference data
 LND_PARCEL_POLYGON = os.path.join(
@@ -333,7 +346,7 @@ def generate_report(no_pid_df, unlocated_df, report_path):
 
 def main(
     scratch_workspace, output_rw_sde, dw_stg, dw_source_tables,
-    pid_field, spatial_reference, exports_dir, truncate_and_load=True
+    pid_field_map, spatial_reference, exports_dir, truncate_and_load=True
 ):
     """
     Main processing function. Loops over configured DW source tables,
@@ -344,7 +357,8 @@ def main(
     :param dw_stg: Path to Data Warehouse staging SDE connection
     :param dw_source_tables: List of (dw_table_name, target_feature_name)
         tuples
-    :param pid_field: Name of the PID field in the data
+    :param pid_field_map: Dict mapping each dw_table_name to its PID field
+        name
     :param spatial_reference: ArcPy SpatialReference object for output
         features
     :param exports_dir: Path to directory for CSV exports
@@ -390,6 +404,14 @@ def main(
 
             logger.error(
                 f"Target SDE feature not found: {target_sde_feature}"
+            )
+            continue
+
+        # Resolve PID field for this table
+        pid_field = pid_field_map.get(dw_table_name)
+        if not pid_field:
+            logger.error(
+                f"No PID field configured for '{dw_table_name}'. Skipping."
             )
             continue
 
@@ -505,7 +527,7 @@ if __name__ == "__main__":
         output_rw_sde=SDEADM_RW,
         dw_stg=DW_STG,
         dw_source_tables=DW_SOURCE_TABLES,
-        pid_field=PID_FIELD,
+        pid_field_map=PID_FIELD_MAP,
         spatial_reference=SPATIAL_REFERENCE,
         exports_dir=EXPORTS_DIR,
         truncate_and_load=TRUNCATE_AND_LOAD,
