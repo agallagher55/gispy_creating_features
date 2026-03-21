@@ -2,12 +2,16 @@
 Geolocate planning and subdivision application features by PID (Parcel ID).
 
 Reads application data from Data Warehouse staging tables, locates each record
-by merging all associated parcel polygons into a single dissolved polygon, and
-loads the results into existing SDE feature classes via truncate-and-load.
+using parcel geometry from LND_parcel_polygon, and loads the results into
+existing SDE feature classes via truncate-and-load.
 
-A planning application may reference multiple parcels via a comma-separated PID
-field. All parcel polygons for a given application are unioned into one polygon
-so the geometry aligns with the application record.
+Two geometry modes are supported (controlled by GEOMETRY_MODE):
+  - "POLYGON": All parcel polygons for a given application are unioned into a
+    single dissolved polygon so the geometry aligns with the application record.
+    A planning application may reference multiple parcels via a comma-separated
+    PID field.
+  - "POINT": The primary (first) PID is used to locate the application at the
+    centroid of its associated parcel polygon.
 
 Modeled after: Posse_Permits/Scripts/Posse_Permits.py
 """
@@ -16,6 +20,8 @@ import os
 import ast
 import time
 import datetime
+
+from collections import namedtuple
 
 import arcpy
 import pandas as pd
@@ -55,6 +61,11 @@ DW_SOURCE_TABLES = ast.literal_eval(
 )
 DEFAULT_PID_FIELD = feature_config.get("GEOLOCATE", "pid_field")
 TRUNCATE_AND_LOAD = feature_config.getboolean("GEOLOCATE", "truncate_and_load")
+
+# Geometry mode — controls how application features are located.
+# "POLYGON": union all parcel polygons for each application into one polygon.
+# "POINT":   place a point at the centroid of the primary (first) PID's parcel.
+GEOMETRY_MODE = "POLYGON"
 
 # Per-table PID field overrides; falls back to DEFAULT_PID_FIELD if not listed
 PID_FIELD_OVERRIDES = (
@@ -180,6 +191,20 @@ def extract_all_pids(pid_value):
     ]
 
 
+def extract_primary_pid(pid_value):
+    """
+    Extract and zero-pad the first PID from a potentially
+    comma-separated list of PIDs.
+
+    :param pid_value: A single PID string or comma-separated PID list
+    :return: Zero-padded 8-character PID string, or None if empty/null
+    """
+    if not pid_value or pd.isna(pid_value):
+        return None
+    first = str(pid_value).split(",")[0].strip()
+    return first.zfill(8) if first else None
+
+
 def get_parcel_polygon(parcel_fc, pid):
     """
     Get the polygon geometry of a parcel identified by PID.
@@ -193,6 +218,29 @@ def get_parcel_polygon(parcel_fc, pid):
     ) as cursor:
         for row in cursor:
             return row[0]
+
+    return None
+
+
+def get_parcel_centroid(parcel_fc, pid):
+    """
+    Get the centroid point of a parcel polygon identified by PID.
+    Uses trueCentroid if it falls within the parcel, otherwise uses
+    labelPoint.
+
+    :param parcel_fc: Path to the parcel polygon feature class
+    :param pid: The PID string (8-char, zero-padded)
+    :return: (X, Y) tuple or None if PID not found
+    """
+    with arcpy.da.SearchCursor(
+        parcel_fc, ["SHAPE@"], f"PID LIKE '{pid}'"
+    ) as cursor:
+        for row in cursor:
+            parcel_geometry = row[0]
+            center_point = parcel_geometry.trueCentroid
+            if parcel_geometry.contains(center_point):
+                return center_point.X, center_point.Y
+            return parcel_geometry.labelPoint.X, parcel_geometry.labelPoint.Y
 
     return None
 
@@ -227,17 +275,133 @@ def build_field_mapping(source, target, field_map_dict):
     return field_mappings
 
 
-def generate_pid_polygons(
+# Carries everything generate_pid_features needs to know about the chosen
+# geometry strategy: the ArcPy geometry type string, the cursor field token,
+# pre-split located/unlocated DataFrames, and a callable that returns the
+# geometry value for a given PID string (may be a tuple for POINT mode or
+# an arcpy Geometry for POLYGON mode).
+GeometryConfig = namedtuple(
+    "GeometryConfig",
+    ["geometry_type", "cursor_field", "located_df", "unlocated_df",
+     "compute_geometry"],
+)
+
+
+def _prepare_polygon_geometry(records_df, pid_field, parcel_fc):
+    """
+    Build a GeometryConfig for POLYGON mode.
+
+    Collects all unique individual PIDs across all records, fetches the
+    full polygon geometry for each, and returns a config whose
+    compute_geometry callable unions every matched parcel polygon for a
+    given PID string into one dissolved polygon.
+
+    :param records_df: DataFrame of records with valid PIDs
+    :param pid_field: Column name of the PID field in records_df
+    :param parcel_fc: Path to LND_parcel_polygon feature class
+    :return: GeometryConfig
+    """
+    all_unique_pids = set()
+    for pid_val in records_df[pid_field].dropna():
+        all_unique_pids.update(extract_all_pids(str(pid_val)))
+
+    logger.info(
+        f"\tLooking up polygons for {len(all_unique_pids)} unique PIDs..."
+    )
+
+    parcel_polygons = {
+        pid: get_parcel_polygon(parcel_fc, pid) for pid in all_unique_pids
+    }
+    found_count = sum(1 for v in parcel_polygons.values() if v is not None)
+    logger.info(
+        f"\tFound parcel polygon for {found_count}/{len(all_unique_pids)} PIDs"
+    )
+
+    def has_any_polygon(pid_val):
+        return any(
+            parcel_polygons.get(p)
+            for p in extract_all_pids(str(pid_val))
+        )
+
+    located_mask = records_df[pid_field].apply(has_any_polygon)
+
+    def compute_geometry(pid_value):
+        pids = extract_all_pids(pid_value) if pid_value else []
+        geometries = [
+            parcel_polygons[p] for p in pids if parcel_polygons.get(p)
+        ]
+        if not geometries:
+            return None
+        merged = geometries[0]
+        for geom in geometries[1:]:
+            merged = merged.union(geom)
+        return merged
+
+    return GeometryConfig(
+        geometry_type="POLYGON",
+        cursor_field="SHAPE@",
+        located_df=records_df[located_mask].copy(),
+        unlocated_df=records_df[~located_mask].copy(),
+        compute_geometry=compute_geometry,
+    )
+
+
+def _prepare_point_geometry(records_df, pid_field, parcel_fc):
+    """
+    Build a GeometryConfig for POINT mode.
+
+    Uses only the primary (first) PID from each record's PID string,
+    fetches the parcel centroid for that PID, and returns a config whose
+    compute_geometry callable returns an (X, Y) tuple.
+
+    :param records_df: DataFrame of records with valid PIDs
+    :param pid_field: Column name of the PID field in records_df
+    :param parcel_fc: Path to LND_parcel_polygon feature class
+    :return: GeometryConfig
+    """
+    primary_pids = records_df[pid_field].apply(extract_primary_pid)
+    unique_primary_pids = primary_pids.dropna().unique().tolist()
+
+    logger.info(
+        f"\tLooking up centroids for {len(unique_primary_pids)} unique PIDs..."
+    )
+
+    centroids = {
+        pid: get_parcel_centroid(parcel_fc, pid)
+        for pid in unique_primary_pids
+    }
+    found_count = sum(1 for v in centroids.values() if v is not None)
+    logger.info(
+        f"\tFound parcel centroid for {found_count}/{len(unique_primary_pids)}"
+        " PIDs"
+    )
+
+    located_mask = primary_pids.apply(lambda p: bool(centroids.get(p)))
+
+    def compute_geometry(pid_value):
+        return centroids.get(extract_primary_pid(pid_value))
+
+    return GeometryConfig(
+        geometry_type="POINT",
+        cursor_field="SHAPE@XY",
+        located_df=records_df[located_mask].copy(),
+        unlocated_df=records_df[~located_mask].copy(),
+        compute_geometry=compute_geometry,
+    )
+
+
+def generate_pid_features(
     records_df, scratch_workspace, target_feature, parcel_fc,
     pid_field, sde_pid_field, spatial_reference, exports_dir,
-    field_map_dict=None
+    geometry_mode="POLYGON", field_map_dict=None
 ):
     """
-    Generate polygon features by merging all parcel polygons for each record.
+    Generate features from PID-based parcel geometry.
 
-    A planning application may reference multiple parcels via a comma-separated
-    PID string. All parcel polygons for a given record are unioned into a single
-    dissolved polygon so the geometry aligns with the application record.
+    Delegates geometry preparation to _prepare_polygon_geometry or
+    _prepare_point_geometry based on geometry_mode. The remainder of the
+    pipeline (CSV export, feature class creation, attribute append, geometry
+    update) is shared between both modes.
 
     :param records_df: DataFrame of records WITH valid PIDs
     :param scratch_workspace: Path to scratch file geodatabase
@@ -249,74 +413,48 @@ def generate_pid_polygons(
     :param spatial_reference: ArcPy SpatialReference object for output
         features
     :param exports_dir: Path to directory for CSV exports
+    :param geometry_mode: "POLYGON" to union all parcel polygons per record;
+        "POINT" to place a point at the primary PID's parcel centroid
     :param field_map_dict: Optional dict of {sde_field: source_column} used
         to build an explicit FieldMappings object for the CSV→temp Append.
         Required when DW column names differ from SDE field names.
-    :return: (located_feature_path, unlocated_df) - located polygon feature
-        class and DataFrame of unlocated records
+    :return: (located_feature_path, unlocated_df) - located feature class
+        and DataFrame of unlocated records
     """
     feature_name = os.path.basename(target_feature).replace("SDEADM.", "")
     temp_feature_name = f"{feature_name}_pid_located"
 
     logger.info(
-        f"Generating PID polygons for '{feature_name}' "
-        f"({len(records_df)} records)..."
+        f"Generating PID features for '{feature_name}' "
+        f"({len(records_df)} records) [mode: {geometry_mode}]..."
     )
 
-    # Collect every individual PID referenced across all records
-    all_unique_pids = set()
-    for pid_val in records_df[pid_field].dropna():
-        all_unique_pids.update(extract_all_pids(str(pid_val)))
+    # Build geometry strategy: lookup parcel data, split located/unlocated,
+    # and produce a compute_geometry callable for the UpdateCursor below.
+    if geometry_mode == "POLYGON":
+        geo = _prepare_polygon_geometry(records_df, pid_field, parcel_fc)
+    else:
+        geo = _prepare_point_geometry(records_df, pid_field, parcel_fc)
 
-    logger.info(
-        f"\tLooking up polygons for {len(all_unique_pids)} unique PIDs..."
-    )
-
-    # Build polygon lookup: {pid: geometry}
-    parcel_polygons = {}
-    for pid in all_unique_pids:
-        parcel_polygons[pid] = get_parcel_polygon(parcel_fc, pid)
-
-    found_count = sum(1 for v in parcel_polygons.values() if v is not None)
-    logger.info(
-        f"\tFound parcel polygon for {found_count}/{len(all_unique_pids)} PIDs"
-    )
-
-    # Identify records where none of their PIDs have a matching polygon;
-    # these cannot be located and will be excluded from the output.
-    def has_any_polygon(pid_val):
-        return any(
-            parcel_polygons.get(p)
-            for p in extract_all_pids(str(pid_val))
-        )
-
-    located_mask = records_df[pid_field].apply(has_any_polygon)
-    unlocated_df = records_df[~located_mask].copy()
-    located_df = records_df[located_mask].copy()
-
-    logger.info(
-        f"\tRecords with at least one matched polygon: {len(located_df)}"
-    )
-    logger.info(
-        f"\tRecords with no matched polygon (unlocated): {len(unlocated_df)}"
-    )
+    logger.info(f"\tRecords locatable: {len(geo.located_df)}")
+    logger.info(f"\tRecords unlocated: {len(geo.unlocated_df)}")
 
     # Export located records to CSV for arcpy compatibility
     os.makedirs(exports_dir, exist_ok=True)
     export_csv = os.path.join(exports_dir, f"{feature_name}_pid_records.csv")
-    located_df.to_csv(export_csv, index=False)
+    geo.located_df.to_csv(export_csv, index=False)
 
-    # Create polygon feature class in scratch workspace using target as
-    # template for field schema
+    # Create temp feature class in scratch workspace using target as schema
+    # template; geometry_type comes from the chosen strategy.
     temp_feature = arcpy.CreateFeatureclass_management(
         out_path=scratch_workspace,
         out_name=temp_feature_name,
-        geometry_type="POLYGON",
+        geometry_type=geo.geometry_type,
         template=target_feature,
         spatial_reference=spatial_reference,
     )[0]
 
-    # Append CSV records into the temp feature (geometry will be set below).
+    # Append CSV records into the temp feature (geometry set below).
     # Use an explicit field mapping when DW column names differ from SDE
     # field names; otherwise fall back to name-based NO_TEST matching.
     if field_map_dict:
@@ -340,27 +478,16 @@ def generate_pid_polygons(
         " records to temp feature"
     )
 
-    # Update each feature's geometry by unioning all of its parcel polygons.
-    # The SDE PID field may hold a comma-separated multi-value string;
-    # extract_all_pids splits and zero-pads every PID in that string.
+    # Update each row's geometry using the strategy's compute_geometry.
+    # cursor_field is "SHAPE@" for polygons or "SHAPE@XY" for points.
     with arcpy.da.UpdateCursor(
-        temp_feature, [sde_pid_field, "SHAPE@"]
+        temp_feature, [sde_pid_field, geo.cursor_field]
     ) as cursor:
 
         for row in cursor:
-
-            all_pids = extract_all_pids(row[0]) if row[0] else []
-            geometries = [
-                parcel_polygons[p]
-                for p in all_pids
-                if parcel_polygons.get(p)
-            ]
-
-            if geometries:
-                merged = geometries[0]
-                for geom in geometries[1:]:
-                    merged = merged.union(geom)
-                row[1] = merged
+            geom = geo.compute_geometry(row[0])
+            if geom is not None:
+                row[1] = geom
                 cursor.updateRow(row)
             else:
                 cursor.deleteRow()
@@ -371,7 +498,7 @@ def generate_pid_polygons(
         f"\tLocated: {arcpy.GetCount_management(temp_feature)[0]} features"
     )
 
-    return temp_feature, unlocated_df
+    return temp_feature, geo.unlocated_df
 
 
 def load_to_sde(source_feature, target_sde_feature, truncate=True):
@@ -468,7 +595,8 @@ def generate_report(no_pid_df, unlocated_df, report_path):
 
 def main(
     scratch_workspace, output_rw_sde, dw_stg, dw_source_tables,
-    pid_field_map, spatial_reference, exports_dir, truncate_and_load=True
+    pid_field_map, spatial_reference, exports_dir, truncate_and_load=True,
+    geometry_mode="POLYGON"
 ):
     """
     Main processing function. Loops over configured DW source tables,
@@ -485,6 +613,8 @@ def main(
         features
     :param exports_dir: Path to directory for CSV exports
     :param truncate_and_load: If True, truncate target features before loading
+    :param geometry_mode: "POLYGON" to union all parcel polygons per record;
+        "POINT" to place a point at the primary PID's parcel centroid
     """
     logger.info(f"OUTPUT WORKSPACE: {output_rw_sde}")
     logger.info(f"DW STAGING: {dw_stg}")
@@ -588,7 +718,7 @@ def main(
             no_pid_report["source_table"] = dw_table_name
             all_no_pid.append(no_pid_report)
 
-        # Generate PID points
+        # Generate PID features
         if has_pid.empty:
 
             logger.warning(
@@ -596,7 +726,7 @@ def main(
             )
             continue
 
-        located_feature, unlocated_df = generate_pid_polygons(
+        located_feature, unlocated_df = generate_pid_features(
             records_df=has_pid,
             scratch_workspace=scratch_workspace,
             target_feature=target_sde_feature,
@@ -605,6 +735,7 @@ def main(
             sde_pid_field=DEFAULT_PID_FIELD,
             spatial_reference=spatial_reference,
             exports_dir=exports_dir,
+            geometry_mode=geometry_mode,
             field_map_dict=TABLE_FIELD_MAPS.get(dw_table_name),
         )
 
@@ -654,6 +785,7 @@ if __name__ == "__main__":
         spatial_reference=SPATIAL_REFERENCE,
         exports_dir=EXPORTS_DIR,
         truncate_and_load=TRUNCATE_AND_LOAD,
+        geometry_mode=GEOMETRY_MODE,
     )
 
     # Replicate to RO SDE
