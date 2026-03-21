@@ -3,6 +3,7 @@ import logging
 import os
 
 import arcpy
+import pandas as pd
 
 
 def feature_subtypes(feature):
@@ -124,6 +125,65 @@ def setupLog(log_file, log_to_console: bool = False):
         logger.addHandler(console_handler)
 
     return logger
+
+
+logger = logging.getLogger(__name__)
+
+
+def table_to_dataframe(input_table) -> pd.DataFrame:
+    """
+    Convert an ArcGIS table (geodatabase table, feature class, or SDE table)
+    to a pandas DataFrame.
+    Adapted from Posse_Permits/Scripts/Posse_Permits_Processing.py
+
+    :param input_table: Path to the input table or feature class
+    :return: pandas DataFrame containing the table data
+    """
+    logger.info(f"Converting table '{input_table}' to DataFrame...")
+
+    fields = [
+        field.name for field in arcpy.ListFields(input_table)
+        if field.type not in ("Geometry", "Blob", "Raster")
+    ]
+
+    data = [row for row in arcpy.da.SearchCursor(input_table, fields)]
+
+    df = pd.DataFrame(data, columns=fields)
+    logger.info(f"\tConverted {len(df)} rows with {len(fields)} fields")
+
+    print(df.head())
+
+    return df
+
+
+def build_field_mapping(source, target, field_map_dict) -> arcpy.FieldMappings:
+    """
+    Build an arcpy FieldMappings object from a {sde_field: source_column} dict.
+
+    :param source: Path to source dataset (CSV or feature class)
+    :param target: Path to target feature class
+    :param field_map_dict: Dict of {target_sde_field: source_column_name}
+    :return: arcpy.FieldMappings object
+    """
+    field_mappings = arcpy.FieldMappings()
+    field_mappings.addTable(target)
+
+    for target_field, source_field in field_map_dict.items():
+
+        fm_index = field_mappings.findFieldMapIndex(target_field)
+
+        if fm_index == -1:
+            logger.warning(
+                f"\tField map: target field '{target_field}' not found "
+                "in feature class schema. Skipping."
+            )
+            continue
+
+        fm = field_mappings.getFieldMap(fm_index)
+        fm.addInputField(source, source_field)
+        field_mappings.replaceFieldMap(fm_index, fm)
+
+    return field_mappings
 
 
 if __name__ == "__main__":
