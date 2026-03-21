@@ -76,6 +76,7 @@ The main script (`create_new_feature_planning_applications.py`) drives this sequ
 - Follow HRM dataset naming conventions: `<SCHEMA>_<THEME>_<NAME>` (e.g., `LND_PPLC_planning_applications`).
 - Use `configparser` for all configuration; avoid hardcoding connection paths.
 - Keep `config.ini` entries as file paths to `.sde` connection files; never embed raw credentials in Python code.
+- Adhere to python pep8 style guide
 
 ### Do Not
 
