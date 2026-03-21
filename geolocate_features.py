@@ -156,8 +156,9 @@ def get_parcel_geometry(parcel_fc, pid):
 
 def generate_pid_points(
     records_df, scratch_workspace, target_feature, parcel_fc,
-    pid_field, spatial_reference, exports_dir
+    pid_field, sde_pid_field, spatial_reference, exports_dir
 ):
+
     """
     Generate point features from PID-based parcel centroids.
     Adapted from Posse_Permits/Scripts/Posse_Permits_Processing.py
@@ -223,13 +224,16 @@ def generate_pid_points(
     unfound_pids = []
 
     with arcpy.da.UpdateCursor(
-        temp_feature, [pid_field, "SHAPE@XY"]
+        temp_feature, [sde_pid_field, "SHAPE@XY"]
     ) as cursor:
+
         for row in cursor:
+
             row_pid = row[0]
             centroid = centroids.get(row_pid)
 
             if centroid:
+
                 row[1] = centroid
                 cursor.updateRow(row)
 
@@ -381,6 +385,7 @@ def main(
 
         dw_table_name, target_feature_name = table_info
         dw_table_path = os.path.join(dw_stg, dw_table_name)
+
         target_sde_feature = os.path.join(
             output_rw_sde, target_feature_name
         ).replace("_TEMP", "")
@@ -409,6 +414,7 @@ def main(
 
         # Resolve PID field for this table
         pid_field = pid_field_map.get(dw_table_name)
+
         if not pid_field:
             logger.error(
                 f"No PID field configured for '{dw_table_name}'. Skipping."
@@ -481,6 +487,7 @@ def main(
             target_feature=target_sde_feature,
             parcel_fc=parcel_fc,
             pid_field=pid_field,
+            sde_pid_field=DEFAULT_PID_FIELD,
             spatial_reference=spatial_reference,
             exports_dir=exports_dir,
         )
