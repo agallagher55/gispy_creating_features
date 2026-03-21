@@ -174,7 +174,9 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     logger.info(f"\tLooking up centroids for {len(pids)} unique PIDs...")
 
     centroids = {}
+    
     for pid in pids:
+        
         geometry = get_parcel_geometry(parcel_fc, pid)
         centroids[pid] = geometry
 
@@ -185,6 +187,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
     unfound_pids = []
 
     with arcpy.da.UpdateCursor(temp_feature, [pid_field, "SHAPE@XY"]) as cursor:
+
         for row in cursor:
             row_pid = row[0]
             centroid = centroids.get(row_pid)
@@ -192,6 +195,7 @@ def generate_pid_points(records_df, scratch_workspace, target_feature, parcel_fc
             if centroid:
                 row[1] = centroid
                 cursor.updateRow(row)
+
             else:
                 unfound_pids.append(row_pid)
                 cursor.deleteRow()
