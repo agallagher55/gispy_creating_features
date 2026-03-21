@@ -27,7 +27,7 @@ import pandas as pd
 from configparser import ConfigParser
 
 from gispy.utils import create_fgdb, setupLog, table_to_dataframe
-from gispy.pid_locator import ParcelLookup, FeatureLocator, GEOMETRY_MODES
+from pid_locator import ParcelLookup, FeatureLocator, GEOMETRY_MODES
 from gispy_utils import load_to_sde, replicate_to_ro
 
 # ---------------------------------------------------------------------------
