@@ -65,6 +65,39 @@ PID_FIELD_MAP = {
     for dw_table, _target in DW_SOURCE_TABLES
 }
 
+# Per-table field maps for Append_management: {dw_table_name: {sde_field: dw_column}}
+# Only needed when DW column names differ from SDE field names.
+# Tables not listed here fall back to name-based matching (schema_type="NO_TEST").
+TABLE_FIELD_MAPS = {
+    "OPENDATA_SOURCE.PPLC_PLANNING_APPLICATIONS": {
+        "APP_NUM":    "Planning_App_Num",
+        "APP_NAME":   "Application_Name",
+        "APP_TYPE":   "Application_Type",
+        "APPSCOPE":   "Application_Scope",
+        "ADAPPSCOPE": "Additional_Application_Scope",
+        "SUBMITDATE": "Submitted_Date",
+        "COMPLEDATE": "Completed_Date",
+        "APPSTATUS":  "App_Status",
+        "DESCRIPACT": "Proposed_Activity_Description",
+        "LOCATION":   "Location",
+        "PID":        "PIDs",
+        "APPROVDATE": "Approved_Date",
+        "FINDDATE":   "Findings_Completed_Date",
+        "MONMETDATE": "Monitor_Meetings_Completed_Date",
+        "RECORDDATE": "Final_Recordation_Completed_Date",
+        "PLUSERNAME": "Assigned_Planner_Name",
+        "WEBURL":     "Website_URL",
+        "GSA_NAME":   "Community",
+        "DIST_ID":    "District",
+        "CURLANDUSE": "Current_Land_Use",
+        "PROPLANDUSE": "Proposed_Land_Use",
+        "REGDESIG":   "Regional_Land_Use_Designation",
+        "LOCDESIG":   "Local_Land_Use_Designation",
+        "PLAN_NAME":  "Community_Plan_Name",
+        "ZONE":       "Zoning",
+    },
+}
+
 # Reference data
 LND_PARCEL_POLYGON = os.path.join(
     SDEADM_RW, "SDEADM.LND_parcels", "SDEADM.LND_parcel_polygon"
@@ -168,10 +201,40 @@ def get_parcel_geometry(parcel_fc, pid):
     return None
 
 
+def build_field_mapping(source, target, field_map_dict):
+    """
+    Build an arcpy FieldMappings object from a {sde_field: source_column} dict.
+
+    :param source: Path to source dataset (CSV or feature class)
+    :param target: Path to target feature class
+    :param field_map_dict: Dict of {target_sde_field: source_column_name}
+    :return: arcpy.FieldMappings object
+    """
+    field_mappings = arcpy.FieldMappings()
+    field_mappings.addTable(target)
+
+    for target_field, source_field in field_map_dict.items():
+
+        fm_index = field_mappings.findFieldMapIndex(target_field)
+
+        if fm_index == -1:
+            logger.warning(
+                f"\tField map: target field '{target_field}' not found "
+                "in feature class schema. Skipping."
+            )
+            continue
+
+        fm = field_mappings.getFieldMap(fm_index)
+        fm.addInputField(source, source_field)
+        field_mappings.replaceFieldMap(fm_index, fm)
+
+    return field_mappings
+
+
 def generate_pid_points(
     records_df, scratch_workspace, target_feature, parcel_fc,
     pid_field, sde_pid_field, spatial_reference, exports_dir,
-    primary_pid_col=None
+    primary_pid_col=None, field_map_dict=None
 ):
 
     """
@@ -191,6 +254,9 @@ def generate_pid_points(
     :param primary_pid_col: Optional column name containing pre-extracted
         single PIDs for geolocation. Use when pid_field may hold
         comma-separated multi-value PID strings. Defaults to pid_field.
+    :param field_map_dict: Optional dict of {sde_field: source_column} used
+        to build an explicit FieldMappings object for the CSV→temp Append.
+        Required when DW column names differ from SDE field names.
     :return: (located_feature_path, unlocated_df) - located point feature
         class and DataFrame of unlocated records
     """
@@ -216,12 +282,25 @@ def generate_pid_points(
         spatial_reference=spatial_reference,
     )[0]
 
-    # Append CSV records into the temp feature
-    arcpy.Append_management(
-        inputs=export_csv,
-        target=temp_feature,
-        schema_type="NO_TEST",
-    )
+    # Append CSV records into the temp feature.
+    # Use an explicit field mapping when DW column names differ from SDE
+    # field names; otherwise fall back to name-based NO_TEST matching.
+    if field_map_dict:
+        field_mapping = build_field_mapping(
+            export_csv, temp_feature, field_map_dict
+        )
+        arcpy.Append_management(
+            inputs=export_csv,
+            target=temp_feature,
+            schema_type="NO_TEST",
+            field_mapping=field_mapping,
+        )
+    else:
+        arcpy.Append_management(
+            inputs=export_csv,
+            target=temp_feature,
+            schema_type="NO_TEST",
+        )
     logger.info(
         f"\tAppended {arcpy.GetCount_management(temp_feature)[0]}"
         " records to temp feature"
@@ -522,6 +601,7 @@ def main(
             spatial_reference=spatial_reference,
             exports_dir=exports_dir,
             primary_pid_col="_primary_pid",
+            field_map_dict=TABLE_FIELD_MAPS.get(dw_table_name),
         )
 
         # Track unlocated records for reporting
