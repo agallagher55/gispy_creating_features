@@ -20,8 +20,8 @@ import pandas as pd
 
 from configparser import ConfigParser
 
-from ..gispy.utils import create_fgdb, setupLog
-from ..gispy.connections import connection_type
+from gispy.utils import create_fgdb, setupLog
+from gispy.connections import connection_type
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -46,7 +46,7 @@ SDEADM_RW = config.get("SERVER", "dev_rw")
 SDEADM_RO = config.get("SERVER", "dev_ro")
 
 # Data Warehouse staging connection
-DW_STG = r"E:\HRM\Scripts\SDE\STG_DW_ArcgisServer.sde"
+DW_STG = config.get("HRM_DW", "connFileDev")
 
 # Geolocate settings from feature config
 DW_SOURCE_TABLES = ast.literal_eval(feature_config.get("GEOLOCATE", "dw_source_tables"))
@@ -70,6 +70,7 @@ arcpy.env.overwriteOutput = True
 
 FAILS_REPORT = os.path.join(REPORTS_DIR, f"{FILE_NAME_BASE}_failed_locates.xlsx")
 
+SEPARATOR = '=' * 60
 
 # ---------------------------------------------------------------------------
 # Functions
@@ -95,6 +96,8 @@ def table_to_dataframe(input_table):
     df = pd.DataFrame(data, columns=fields)
     logger.info(f"\tConverted {len(df)} rows with {len(fields)} fields")
 
+    print(df.head())
+
     return df
 
 
@@ -116,6 +119,7 @@ def get_parcel_geometry(parcel_fc, pid):
 
             if parcel_geometry.contains(center_point):
                 return center_point.X, center_point.Y
+
             else:
                 label_point = parcel_geometry.labelPoint
                 return label_point.X, label_point.Y
@@ -315,28 +319,33 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
     total_tables = len(dw_source_tables)
 
     for table_count, table_info in enumerate(dw_source_tables, start=1):
+
         dw_table_name, target_feature_name = table_info
         dw_table_path = os.path.join(dw_stg, dw_table_name)
-        target_sde_feature = os.path.join(output_rw_sde, target_feature_name)
+        target_sde_feature = os.path.join(output_rw_sde, target_feature_name).replace("_TEMP", "")
 
         feature_label = target_feature_name.replace("SDEADM.", "")
-        logger.info(f"\n{'='*60}")
+
+        logger.info(f"\n{SEPARATOR}")
         logger.info(f"Processing {table_count}/{total_tables}: {feature_label}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{SEPARATOR}")
 
         # Verify source table exists
         if not arcpy.Exists(dw_table_path):
+
             logger.error(f"DW source table not found: {dw_table_path}")
             continue
 
         # Verify target feature exists
         if not arcpy.Exists(target_sde_feature):
+
             logger.error(f"Target SDE feature not found: {target_sde_feature}")
             continue
 
         # Read source data from Data Warehouse
         table_row_count = int(arcpy.management.GetCount(dw_table_path)[0])
         if table_row_count == 0:
+
             logger.warning(f"No data found in {dw_table_path}. Skipping.")
             continue
 
@@ -348,6 +357,7 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
 
         # Clean PID field — zero-pad to 8 characters
         if pid_field in df.columns:
+
             df[pid_field] = df[pid_field].astype(str).replace({"nan": None, "None": None})
 
             # Separate records by PID availability
@@ -358,6 +368,7 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
             has_pid[pid_field] = has_pid[pid_field].apply(lambda x: x.zfill(8))
 
         else:
+
             logger.error(f"PID field '{pid_field}' not found in DW table columns: {df.columns.tolist()}")
             continue
 
@@ -367,12 +378,14 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
 
         # Track no-PID records for reporting
         if not no_pid.empty:
+
             no_pid_report = no_pid.copy()
             no_pid_report["source_table"] = dw_table_name
             all_no_pid.append(no_pid_report)
 
         # Generate PID points
         if has_pid.empty:
+
             logger.warning("No records with PID to process. Skipping geolocation.")
             continue
 
@@ -388,6 +401,7 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
 
         # Track unlocated records for reporting
         if not unlocated_df.empty:
+
             unlocated_report = unlocated_df.copy()
             unlocated_report["source_table"] = dw_table_name
             all_unlocated.append(unlocated_report)
@@ -399,21 +413,17 @@ def main(scratch_workspace, output_rw_sde, dw_stg, dw_source_tables, pid_field, 
         if located_count > 0:
             load_to_sde(located_feature, target_sde_feature, truncate=truncate_and_load)
             processed_features.append(target_feature_name)
+
         else:
             logger.warning("No located features to load.")
 
     return processed_features, all_no_pid, all_unlocated
 
-
-# ---------------------------------------------------------------------------
-# Entry Point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
 
     start_time = time.time()
     logger.info(f"Start: {time.asctime()}")
-    logger.info("-" * 60)
+    logger.info(SEPARATOR)
 
     # Create scratch workspace
     logger.info("Creating local scratch workspace...")
@@ -446,6 +456,6 @@ if __name__ == "__main__":
 
     # Summary
     elapsed = time.time() - start_time
-    logger.info("-" * 60)
+    logger.info(SEPARATOR)
     logger.info(f"End: {time.asctime()}")
     logger.info(f"Elapsed: {elapsed:.1f} seconds")
