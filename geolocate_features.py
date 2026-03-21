@@ -136,10 +136,6 @@ logger = setupLog(log_file, log_to_console=True)
 arcpy.SetLogHistory(False)
 arcpy.env.overwriteOutput = True
 
-FAILS_REPORT = os.path.join(
-    REPORTS_DIR, f"{FILE_NAME_BASE}_failed_locates.xlsx"
-)
-
 SEPARATOR = '=' * 60
 
 # ---------------------------------------------------------------------------
@@ -595,12 +591,13 @@ def generate_report(no_pid_df, unlocated_df, report_path):
 
 def main(
     scratch_workspace, output_rw_sde, dw_stg, dw_source_tables,
-    pid_field_map, spatial_reference, exports_dir, truncate_and_load=True,
-    geometry_mode="POLYGON"
+    pid_field_map, spatial_reference, exports_dir, reports_dir,
+    truncate_and_load=True, geometry_mode="POLYGON"
 ):
     """
     Main processing function. Loops over configured DW source tables,
-    geolocates records by PID, and loads into SDE.
+    geolocates records by PID, loads into SDE, and writes one failure report
+    per table.
 
     :param scratch_workspace: Path to scratch file geodatabase
     :param output_rw_sde: Path to read-write SDE connection
@@ -612,6 +609,7 @@ def main(
     :param spatial_reference: ArcPy SpatialReference object for output
         features
     :param exports_dir: Path to directory for CSV exports
+    :param reports_dir: Path to directory for per-table failure reports
     :param truncate_and_load: If True, truncate target features before loading
     :param geometry_mode: "POLYGON" to union all parcel polygons per record;
         "POINT" to place a point at the primary PID's parcel centroid
@@ -619,8 +617,6 @@ def main(
     logger.info(f"OUTPUT WORKSPACE: {output_rw_sde}")
     logger.info(f"DW STAGING: {dw_stg}")
 
-    all_no_pid = []
-    all_unlocated = []
     processed_features = []
 
     parcel_fc = os.path.join(
@@ -711,12 +707,7 @@ def main(
             f"Records without PID: {len(no_pid)} (will be skipped)"
         )
 
-        # Track no-PID records for reporting
-        if not no_pid.empty:
-
-            no_pid_report = no_pid.copy()
-            no_pid_report["source_table"] = dw_table_name
-            all_no_pid.append(no_pid_report)
+        unlocated_df = pd.DataFrame()
 
         # Generate PID features
         if has_pid.empty:
@@ -724,44 +715,45 @@ def main(
             logger.warning(
                 "No records with PID to process. Skipping geolocation."
             )
-            continue
-
-        located_feature, unlocated_df = generate_pid_features(
-            records_df=has_pid,
-            scratch_workspace=scratch_workspace,
-            target_feature=target_sde_feature,
-            parcel_fc=parcel_fc,
-            pid_field=pid_field,
-            sde_pid_field=DEFAULT_PID_FIELD,
-            spatial_reference=spatial_reference,
-            exports_dir=exports_dir,
-            geometry_mode=geometry_mode,
-            field_map_dict=TABLE_FIELD_MAPS.get(dw_table_name),
-        )
-
-        # Track unlocated records for reporting
-        if not unlocated_df.empty:
-
-            unlocated_report = unlocated_df.copy()
-            unlocated_report["source_table"] = dw_table_name
-            all_unlocated.append(unlocated_report)
-
-        located_count = int(arcpy.GetCount_management(located_feature)[0])
-        logger.info(f"Total located features: {located_count}")
-
-        # Load into SDE
-        if located_count > 0:
-            load_to_sde(
-                located_feature,
-                target_sde_feature,
-                truncate=truncate_and_load,
-            )
-            processed_features.append(target_feature_name)
 
         else:
-            logger.warning("No located features to load.")
 
-    return processed_features, all_no_pid, all_unlocated
+            located_feature, unlocated_df = generate_pid_features(
+                records_df=has_pid,
+                scratch_workspace=scratch_workspace,
+                target_feature=target_sde_feature,
+                parcel_fc=parcel_fc,
+                pid_field=pid_field,
+                sde_pid_field=DEFAULT_PID_FIELD,
+                spatial_reference=spatial_reference,
+                exports_dir=exports_dir,
+                geometry_mode=geometry_mode,
+                field_map_dict=TABLE_FIELD_MAPS.get(dw_table_name),
+            )
+
+            located_count = int(arcpy.GetCount_management(located_feature)[0])
+            logger.info(f"Total located features: {located_count}")
+
+            # Load into SDE
+            if located_count > 0:
+                load_to_sde(
+                    located_feature,
+                    target_sde_feature,
+                    truncate=truncate_and_load,
+                )
+                processed_features.append(target_feature_name)
+
+            else:
+                logger.warning("No located features to load.")
+
+        # Write per-table failure report when any records could not be located
+        if not no_pid.empty or not unlocated_df.empty:
+            report_path = os.path.join(
+                reports_dir, f"{feature_label}_failed_locates.xlsx"
+            )
+            generate_report(no_pid, unlocated_df, report_path)
+
+    return processed_features
 
 
 if __name__ == "__main__":
@@ -776,7 +768,8 @@ if __name__ == "__main__":
     scratch_ws = create_fgdb(SCRATCH_DIR, "Scratch.gdb")
 
     # Run main processing
-    processed_features, all_no_pid, all_unlocated = main(
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    processed_features = main(
         scratch_workspace=scratch_ws,
         output_rw_sde=SDEADM_RW,
         dw_stg=DW_STG,
@@ -784,6 +777,7 @@ if __name__ == "__main__":
         pid_field_map=PID_FIELD_MAP,
         spatial_reference=SPATIAL_REFERENCE,
         exports_dir=EXPORTS_DIR,
+        reports_dir=REPORTS_DIR,
         truncate_and_load=TRUNCATE_AND_LOAD,
         geometry_mode=GEOMETRY_MODE,
     )
@@ -791,20 +785,6 @@ if __name__ == "__main__":
     # Replicate to RO SDE
     if processed_features:
         replicate_to_ro(SDEADM_RW, SDEADM_RO, processed_features)
-
-    # Generate failure report
-    no_pid_combined = (
-        pd.concat(all_no_pid, ignore_index=True)
-        if all_no_pid else pd.DataFrame()
-    )
-    unlocated_combined = (
-        pd.concat(all_unlocated, ignore_index=True)
-        if all_unlocated else pd.DataFrame()
-    )
-
-    if not no_pid_combined.empty or not unlocated_combined.empty:
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        generate_report(no_pid_combined, unlocated_combined, FAILS_REPORT)
 
     # Summary
     elapsed = time.time() - start_time
