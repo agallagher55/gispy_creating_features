@@ -492,6 +492,51 @@ def generate_report(no_pid_df, unlocated_df, report_path):
     logger.info(f"\tReport saved to {report_path}")
 
 
+def analyze_datasets(sde_connection, feature_names):
+    """
+    Update table and index statistics for the given feature classes.
+
+    Should be called after bulk load operations so the SQL Server query
+    optimizer has accurate statistics for spatial queries and map service
+    rendering.
+
+    :param sde_connection: Path to the SDE connection file
+    :param feature_names: List of feature class names to analyze
+        (e.g. ['SDEADM.LND_PPLC_planning_applications'])
+    """
+    logger.info(f"Analyzing datasets: {feature_names}")
+    arcpy.AnalyzeDatasets_management(
+        input_database=sde_connection,
+        include_system="NO_SYSTEM",
+        in_datasets=feature_names,
+        analyze_base="ANALYZE_BASE",
+        analyze_delta="ANALYZE_DELTA",
+        analyze_archive="ANALYZE_ARCHIVE",
+    )
+    logger.info("\tAnalysis complete.")
+
+
+def rebuild_indexes(sde_connection, feature_names):
+    """
+    Rebuild spatial and attribute indexes for the given feature classes.
+
+    Should be called after bulk load operations to reduce index
+    fragmentation introduced by truncate-and-load patterns.
+
+    :param sde_connection: Path to the SDE connection file
+    :param feature_names: List of feature class names to rebuild
+        (e.g. ['SDEADM.LND_PPLC_planning_applications'])
+    """
+    logger.info(f"Rebuilding indexes: {feature_names}")
+    arcpy.RebuildIndexes_management(
+        input_database=sde_connection,
+        include_system="NO_SYSTEM",
+        in_datasets=feature_names,
+        delta_only="ALL",
+    )
+    logger.info("\tIndex rebuild complete.")
+
+
 def main(
     scratch_workspace, output_rw_sde, dw_stg, dw_source_tables,
     pid_field_map, spatial_reference, exports_dir, reports_dir,
@@ -645,6 +690,8 @@ def main(
                     truncate=truncate_and_load,
                 )
                 processed_features.append(target_feature_name)
+                analyze_datasets(output_rw_sde, [target_feature_name])
+                rebuild_indexes(output_rw_sde, [target_feature_name])
 
             else:
                 logger.warning("No located features to load.")
@@ -688,6 +735,8 @@ if __name__ == "__main__":
     # Replicate to RO SDE
     if processed_features:
         replicate_to_ro(SDEADM_RW, SDEADM_RO, processed_features)
+        analyze_datasets(SDEADM_RO, processed_features)
+        rebuild_indexes(SDEADM_RO, processed_features)
 
     # Summary
     elapsed = time.time() - start_time
