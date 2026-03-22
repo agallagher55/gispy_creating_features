@@ -6,6 +6,8 @@ A Python automation tool for creating and managing feature classes in Esri ArcGI
 
 GISpy automates the workflow of creating new feature classes and tables in enterprise geodatabases. It reads feature schema definitions from an Excel-based Spatial Data Submission Form (SDSF), then orchestrates the full setup pipeline: domains, fields, versioning, replication, indexing, editor tracking, and attribute rules.
 
+A companion geolocate script populates existing feature classes with spatial data from Data Warehouse staging tables, locating each record at its associated parcel geometry.
+
 ## Features
 
 - **Excel-driven schema**: Define feature classes entirely via Excel submission forms
@@ -17,12 +19,14 @@ GISpy automates the workflow of creating new feature classes and tables in enter
 - **Subtype support**: Feature classes with per-subtype domain assignments
 - **Privilege management**: Configurable user/role permissions
 - **Versioning**: Automatic SDE versioning registration
+- **Archiving**: Optional SDE archiving support
+- **Geolocation**: Locate application records at parcel centroids or unioned parcel polygons
 
 ## Requirements
 
 - ArcGIS Pro or ArcGIS Enterprise with a valid ArcPy license
 - Python 3.x (bundled with ArcGIS Pro)
-- `pandas` library
+- `pandas` and `openpyxl` libraries
 - Access to MSSQL-backed SDE geodatabases
 - Windows environment (paths and SDE connections are Windows-specific)
 
@@ -30,12 +34,12 @@ GISpy automates the workflow of creating new feature classes and tables in enter
 
 1. Clone this repository into your scripts directory:
    ```
-   git clone <repo-url> gispy_creating_features
+   git clone <repo-url> pplc_applications
    ```
 
-2. Install `pandas` if not already available in your ArcGIS Python environment:
+2. Install required libraries if not already available in your ArcGIS Python environment:
    ```
-   pip install pandas
+   pip install pandas openpyxl
    ```
 
 3. Configure your SDE connection files (`.sde`) for Dev, QA, and Production environments.
@@ -72,6 +76,7 @@ SDSF_IGNORE_FIELDS = ["OBJECTID", "GLOBALID", "SHAPE", "SHAPE_AREA", "SHAPE_LENG
 
 [FEATURE_SETTINGS]
 add_editor_tracking = False
+enable_archiving = False
 EDIT_PERMISSIONS_USERS = []
 ready_to_add_to_replica = False
 replica_name = LND_Rosde
@@ -79,7 +84,10 @@ subtypes = False
 topology_dataset = False
 subtype_field =
 subtype_domains = {}
-unique_id_fields = [{}]
+
+[UNIQUE_ID_FIELDS]
+; Map feature_name to a JSON list of {field, prefix} dicts
+; lnd_pplc_planning_applications = [{"field": "APP_ID", "prefix": "PA-"}]
 
 [NEW_DOMAIN_TYPES]
 ; Uncomment and define domain field types as needed:
@@ -102,15 +110,16 @@ The script will:
 3. Create the feature class with specified geometry type
 4. Add all fields with types, lengths, domains, and default values
 5. Add GlobalIDs and configure editor tracking (if enabled)
-6. Register as versioned in SDE
-7. Add the feature to synchronization replicas (if enabled)
-8. Create indexes on ID fields
-9. Apply attribute rules for auto-incrementing IDs
+6. Register as versioned in SDE; enable archiving (if enabled)
+7. Copy the RW feature class to RO SDE (unversioned, editor tracking disabled)
+8. Add the feature to synchronization replicas (if enabled)
+9. Create indexes on ID fields (RW and RO)
+10. Apply attribute rules for auto-incrementing IDs
 
 ### Geolocate planning application features
 
 Run the geolocate script to populate existing SDE feature classes from Data
-Warehouse staging tables, locating each record at its parcel centroid:
+Warehouse staging tables, locating each record at its parcel geometry:
 
 ```bash
 python geolocate_features.py
@@ -121,20 +130,29 @@ Configure `geolocate.ini` before running:
 ```ini
 [GEOLOCATE]
 dw_source_tables = [
-    ("DW_STG.PPLC_planning_applications", "SDEADM.LND_PPLC_planning_applications"),
+    ("OPENDATA_SOURCE.PPLC_PLANNING_APPLICATIONS", "SDEADM.LND_PPLC_planning_applications"),
     ]
 pid_field        = PID
 truncate_and_load = True
+
+[PID_FIELDS]
+; Optional: override the PID field name per source table
+; OPENDATA_SOURCE.PPLC_PLANNING_APPLICATIONS = PIDs
 ```
+
+Two geometry modes are supported (set `GEOMETRY_MODE` in the script):
+- **`POLYGON`** (default): All parcel polygons for an application are unioned into one dissolved polygon. Use when records reference multiple PIDs.
+- **`POINT`**: A point is placed at the centroid of the primary (first) PID's parcel.
 
 The script will:
 1. Read records from Data Warehouse staging tables
 2. Separate records by PID availability
-3. Look up parcel centroids from `LND_parcel_polygon` for each PID
-4. Create point features in a scratch workspace
-5. Load located features into the target SDE feature class (truncate-and-load)
-6. Replicate updated features from RW to RO SDE
-7. Generate an Excel report of records that could not be located
+3. Look up parcel geometry from `LND_parcel_polygon` for each unique PID
+4. Export located records to CSV; create temp feature class in scratch workspace
+5. Append attributes and update geometry via UpdateCursor
+6. Load located features into the target SDE feature class (truncate-and-load)
+7. Replicate updated features from RW to RO SDE
+8. Generate an Excel report of records that could not be located
 
 ## Project Structure
 
@@ -142,9 +160,15 @@ The script will:
 pplc_applications/
 ├── create_feature_planning_applications.py      # Feature class creation entry point
 ├── geolocate_features.py                        # Geolocate features from DW staging
+├── gispy_utils.py                               # Shared helpers: load_to_sde(), replicate_to_ro()
 ├── config.ini                                    # Server SDE and DW connection paths
 ├── feature_config_planning_applications.ini      # Feature-specific job settings
 ├── geolocate.ini                                 # Geolocate job settings
+│
+├── Logs/                                         # Runtime log files (auto-created)
+├── Scratch/                                      # Scratch file geodatabases (auto-created)
+├── Reports/                                      # Failure/locate Excel reports (auto-created)
+├── Exports/                                      # CSV exports for arcpy Append (auto-created)
 │
 ├── Posse_Permits/                                # Posse permit processing scripts
 │   └── Scripts/                                  # ETL and utility scripts
@@ -155,9 +179,11 @@ pplc_applications/
     ├── domains.py                                # Coded domain management
     ├── editor_tracking.py                        # Editor tracking field setup
     ├── features.py                               # Generic feature operations
-    ├── metadata.py                               # Metadata management
+    ├── metadata.py                               # Metadata extraction and update
+    ├── metadata_update.py                        # Standalone metadata update script
     ├── subtypes.py                               # Subtype configuration
-    ├── utils.py                                  # Shared utility functions
+    ├── utils.py                                  # create_fgdb(), setupLog(),
+    │                                             #   table_to_dataframe(), build_field_mapping()
     ├── out_of_sync_ids.py                        # ID sync between RW and RO SDE
     ├── list_schema_features.py                   # Schema feature listing
     ├── project.py                                # Project utilities
@@ -182,4 +208,6 @@ pplc_applications/
 
 - **SDE ID fields** must be set to `NULLABLE` for Registry Editor services to create features and calculate IDs post-creation.
 - **Credentials**: Do not commit `.sde` files or `config.ini` files containing passwords to version control.
+- **Runtime directories** (`Logs/`, `Scratch/`, `Reports/`, `Exports/`) are created automatically when scripts run.
 - The tool is tailored for HRM dataset naming conventions (LND, ADM, AST, CIV, BLD, EMO, MAP, ROAD, SNF, StrDir, TRN).
+- `gispy_utils.py` re-exports `table_to_dataframe` and `build_field_mapping` from `gispy.utils` for backward compatibility.
