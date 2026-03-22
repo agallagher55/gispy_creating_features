@@ -50,8 +50,8 @@ feature_config.optionxform = str  # preserve case
 feature_config.read("geolocate.ini")
 
 # SDE connections
-SDEADM_RW = config.get("SERVER", "dev_rw")
-SDEADM_RO = config.get("SERVER", "dev_ro")
+SDEADM_RW = config.get("SERVER", "prod_rw")
+SDEADM_RO = config.get("SERVER", "prod_ro")
 
 # Data Warehouse staging connection
 DW_STG = config.get("HRM_DW", "connFileDev")
@@ -146,16 +146,9 @@ TABLE_FIELD_MAPS = {
 }
 
 # Reference data
-LND_PARCEL_POLYGON = os.path.join(
-    SDEADM_RW, "SDEADM.LND_parcels", "SDEADM.LND_parcel_polygon"
-)
-SPATIAL_REFERENCE = arcpy.Describe(
-    os.path.join(
-        config.get("SERVER", "prod_rw"),
-        "SDEADM.LND_hrm_parcel_parks",
-        "SDEADM.LND_hrm_park",
-    )
-).spatialReference
+LND_PARCEL_POLYGON = os.path.join(SDEADM_RW, "SDEADM.LND_parcels", "SDEADM.LND_parcel_polygon")
+
+SPATIAL_REFERENCE = arcpy.Describe(LND_PARCEL_POLYGON).spatialReference
 
 # Logging
 log_file = os.path.join(
